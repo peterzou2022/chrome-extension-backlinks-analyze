@@ -30,7 +30,48 @@ const CSV_COLUMNS = [
   'response_code',
   'external_link_num',
   'internal_link_num',
+  'source_root_domain',
+  'backlink_type',
 ] as const;
+
+const getRootDomain = (url: string): string => {
+  const u = (url || '').trim();
+  if (!u) return '';
+  try {
+    const host = new URL(u).hostname.replace(/^www\./i, '');
+    const parts = host.split('.');
+    if (parts.length >= 2) {
+      const last = parts[parts.length - 1];
+      const second = parts[parts.length - 2];
+      if (last === 'uk' && (second === 'co' || second === 'ac')) {
+        return parts.slice(-3).join('.');
+      }
+      return parts.slice(-2).join('.');
+    }
+    return host;
+  } catch {
+    return '';
+  }
+};
+
+const BACKLINK_TYPE_KEYWORDS: { type: string; patterns: RegExp[] }[] = [
+  { type: '论坛', patterns: [/forum|bbs|discuz|reddit|quora|贴吧|社区|v2ex|discourse/i] },
+  { type: '博客', patterns: [/blog|wordpress|blogspot|medium|substack|知乎|专栏|tumblr|ghost/i] },
+  { type: '导航站', patterns: [/directory|导航|nav|hao123|dmoz|bookmark|link.?list|资源站/i] },
+  { type: '新闻', patterns: [/news|新华|人民网|reuters|bbc|cnn|搜狐|新浪|网易|腾讯新闻/i] },
+  { type: '社交媒体', patterns: [/twitter|facebook|linkedin|instagram|youtube|pinterest|weibo|抖音|小红书/i] },
+  { type: '问答', patterns: [/quora|stackoverflow|stackexchange|zhihu|问答|ask/i] },
+];
+
+const classifyBacklink = (row: Record<string, unknown>): string => {
+  const url = String(row.source_url ?? '').trim();
+  const title = String(row.source_title ?? '').trim();
+  const text = `${url} ${title}`.toLowerCase();
+  for (const { type, patterns } of BACKLINK_TYPE_KEYWORDS) {
+    if (patterns.some(p => p.test(text))) return type;
+  }
+  return '其他';
+};
 
 const escapeCsvCell = (value: unknown): string => {
   let s = value === null || value === undefined ? '' : String(value);
@@ -41,10 +82,15 @@ const escapeCsvCell = (value: unknown): string => {
   return s;
 };
 
+const parseDomainAscore = (value: unknown): number => {
+  if (value === null || value === undefined) return 0;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
 const buildBacklinksCsv = (data: Record<string, { items: Record<string, unknown>[] }>): string => {
-  const header = CSV_COLUMNS.join(',');
-  const rows: string[] = [header];
   const seen = new Set<string>();
+  const dataRows: Record<string, unknown>[] = [];
   for (const [, { items }] of Object.entries(data)) {
     if (!Array.isArray(items)) continue;
     for (const row of items) {
@@ -54,11 +100,22 @@ const buildBacklinksCsv = (data: Record<string, { items: Record<string, unknown>
       const key = `${sourceUrl}\t${targetUrl}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const cells = CSV_COLUMNS.map(col => escapeCsvCell(row[col]));
-      rows.push(cells.join(','));
+      dataRows.push(row);
     }
   }
-  return rows.join('\r\n');
+  dataRows.sort((a, b) => parseDomainAscore(b.domain_ascore) - parseDomainAscore(a.domain_ascore));
+  const header = CSV_COLUMNS.join(',');
+  const lines: string[] = [header];
+  for (const row of dataRows) {
+    const sourceUrl = String(row.source_url ?? '').trim();
+    const cells = CSV_COLUMNS.map(col => {
+      if (col === 'source_root_domain') return escapeCsvCell(getRootDomain(sourceUrl));
+      if (col === 'backlink_type') return escapeCsvCell(classifyBacklink(row));
+      return escapeCsvCell(row[col]);
+    });
+    lines.push(cells.join(','));
+  }
+  return lines.join('\r\n');
 };
 
 const downloadCsv = (csv: string, filename: string): void => {
@@ -265,10 +322,22 @@ const Popup = () => {
       }
       setCaptureAllError(null);
       const csv = buildBacklinksCsv(data);
-      const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
-      downloadCsv(csv, `backlinks-export-${timestamp}.csv`);
+      const targetDomain = Object.keys(data)[0] ?? 'export';
+      const targetSlug = targetDomain.replace(/\./g, '-');
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+      downloadCsv(csv, `${targetSlug}-${dateStr}.csv`);
       setExportSuccess(`已导出 ${totalItems} 条记录`);
       setTimeout(() => setExportSuccess(null), 4000);
+    });
+  };
+
+  const clearBacklinksData = () => {
+    chrome.storage.local.remove(SEMRUSH_BACKLINKS_STORAGE_KEY, () => {
+      setBacklinksByDomain({});
+      setCaptureAllError(null);
+      setExportSuccess('已清空数据');
+      setTimeout(() => setExportSuccess(null), 3000);
     });
   };
 
@@ -319,6 +388,16 @@ const Popup = () => {
                 onClick={exportBacklinksCsv}
                 disabled={domains.length === 0}>
                 导出 CSV
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'w-full rounded px-3 py-1.5 font-medium',
+                  isLight ? 'bg-amber-200 text-black' : 'bg-gray-600 text-white',
+                )}
+                onClick={clearBacklinksData}
+                disabled={domains.length === 0}>
+                清空数据
               </button>
             </div>
             {captureAllError && <p className="mt-2 text-xs text-red-500">{captureAllError}</p>}
