@@ -37,6 +37,27 @@ const mergeBacklinksItems = (existing: BacklinkRow[], incoming: BacklinkRow[]): 
   return existing.concat(added);
 };
 
+let backlinksProcessQueue: Promise<void> = Promise.resolve();
+
+const processBacklinksPageData = async (msg: {
+  domain: string;
+  items: BacklinkRow[];
+  total?: number;
+}): Promise<{ ok: true; domain: string; count: number; total: number } | { ok: false; error: string }> => {
+  const raw = await chrome.storage.local.get(BACKLINKS_STORAGE_KEY);
+  const all = (raw[BACKLINKS_STORAGE_KEY] as Record<string, DomainBacklinks>) || {};
+  const current = all[msg.domain] || { items: [], total: 0, updatedAt: 0 };
+  const merged = mergeBacklinksItems(current.items, msg.items);
+  const total = msg.total ?? current.total;
+  all[msg.domain] = {
+    items: merged,
+    total,
+    updatedAt: Date.now(),
+  };
+  await chrome.storage.local.set({ [BACKLINKS_STORAGE_KEY]: all });
+  return { ok: true, domain: msg.domain, count: merged.length, total };
+};
+
 chrome.runtime.onMessage.addListener(
   (
     msg: {
@@ -47,30 +68,24 @@ chrome.runtime.onMessage.addListener(
       page?: number;
       requestUrl?: string;
     },
-    sender,
+    _sender,
     sendResponse,
   ) => {
     if (msg.type !== 'SEMRUSH_BACKLINKS_PAGE_DATA' || !msg.domain || !Array.isArray(msg.items)) {
       return;
     }
-    (async () => {
+    backlinksProcessQueue = backlinksProcessQueue.then(async () => {
       try {
-        const raw = await chrome.storage.local.get(BACKLINKS_STORAGE_KEY);
-        const all = (raw[BACKLINKS_STORAGE_KEY] as Record<string, DomainBacklinks>) || {};
-        const current = all[msg.domain] || { items: [], total: 0, updatedAt: 0 };
-        const merged = mergeBacklinksItems(current.items, msg.items);
-        const total = msg.total ?? current.total;
-        all[msg.domain] = {
-          items: merged,
-          total,
-          updatedAt: Date.now(),
-        };
-        await chrome.storage.local.set({ [BACKLINKS_STORAGE_KEY]: all });
-        sendResponse({ ok: true, domain: msg.domain, count: merged.length, total });
+        const result = await processBacklinksPageData({
+          domain: msg.domain!,
+          items: msg.items!,
+          total: msg.total,
+        });
+        sendResponse(result);
       } catch (e) {
         sendResponse({ ok: false, error: String(e) });
       }
-    })();
+    });
     return true;
   },
 );

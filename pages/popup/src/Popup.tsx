@@ -33,8 +33,9 @@ const CSV_COLUMNS = [
 ] as const;
 
 const escapeCsvCell = (value: unknown): string => {
-  const s = value === null || value === undefined ? '' : String(value);
-  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+  let s = value === null || value === undefined ? '' : String(value);
+  s = s.replace(/\r\n|\r|\n/g, ' ').trim();
+  if (s.includes(',') || s.includes('"')) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
@@ -43,9 +44,16 @@ const escapeCsvCell = (value: unknown): string => {
 const buildBacklinksCsv = (data: Record<string, { items: Record<string, unknown>[] }>): string => {
   const header = CSV_COLUMNS.join(',');
   const rows: string[] = [header];
+  const seen = new Set<string>();
   for (const [, { items }] of Object.entries(data)) {
     if (!Array.isArray(items)) continue;
     for (const row of items) {
+      const sourceUrl = String(row.source_url ?? '').trim();
+      const targetUrl = String(row.target_url ?? '').trim();
+      if (!sourceUrl && !targetUrl) continue;
+      const key = `${sourceUrl}\t${targetUrl}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const cells = CSV_COLUMNS.map(col => escapeCsvCell(row[col]));
       rows.push(cells.join(','));
     }
@@ -75,6 +83,7 @@ const Popup = () => {
   const [backlinksByDomain, setBacklinksByDomain] = useState<Record<string, { count: number; total: number }>>({});
   const [captureAllLoading, setCaptureAllLoading] = useState(false);
   const [captureAllError, setCaptureAllError] = useState<string | null>(null);
+  const [exportSuccess, setExportSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     chrome.tabs.query({ currentWindow: true, active: true }).then(([tab]) => {
@@ -240,6 +249,7 @@ const Popup = () => {
   };
 
   const exportBacklinksCsv = () => {
+    setExportSuccess(null);
     chrome.storage.local.get(SEMRUSH_BACKLINKS_STORAGE_KEY).then(raw => {
       const data = raw[SEMRUSH_BACKLINKS_STORAGE_KEY] as
         | Record<string, { items: Record<string, unknown>[] }>
@@ -257,6 +267,8 @@ const Popup = () => {
       const csv = buildBacklinksCsv(data);
       const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
       downloadCsv(csv, `backlinks-export-${timestamp}.csv`);
+      setExportSuccess(`已导出 ${totalItems} 条记录`);
+      setTimeout(() => setExportSuccess(null), 4000);
     });
   };
 
@@ -310,6 +322,7 @@ const Popup = () => {
               </button>
             </div>
             {captureAllError && <p className="mt-2 text-xs text-red-500">{captureAllError}</p>}
+            {exportSuccess && <p className="mt-2 text-xs text-green-600">{exportSuccess}</p>}
             {domains.length > 0 && (
               <ul className="mt-2 space-y-1 text-xs">
                 {domains.map(([domain, { count, total }]) => (
