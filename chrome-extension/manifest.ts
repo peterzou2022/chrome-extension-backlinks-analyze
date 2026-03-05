@@ -57,6 +57,17 @@ const manifest = {
       js: ['content/example.iife.js'],
     },
     {
+      matches: ['*://*.semrush.com/*', '*://*.semrush.fun/*'],
+      js: ['content/semrush-hook.iife.js'],
+      run_at: 'document_start',
+      world: 'MAIN',
+    },
+    {
+      matches: ['*://*.semrush.com/*', '*://*.semrush.fun/*'],
+      js: ['content/semrush-backlinks.iife.js'],
+      run_at: 'document_start',
+    },
+    {
       matches: ['http://*/*', 'https://*/*', '<all_urls>'],
       js: ['content-ui/all.iife.js'],
     },
